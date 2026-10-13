@@ -18,6 +18,9 @@
 //   argv[1] == "free" -> exercise replacement_free (the production free path)
 //   argv[1] == "tagged" -> exercise malloc_interposer_is_ours with a synthetic
 //                           Objective-C tagged pointer (Darwin only)
+//   argv[1] == "mmap"   -> exercise replacement_malloc_size with a page-aligned
+//                           pointer owned by no malloc zone whose preceding
+//                           page is PROT_NONE (Darwin only)
 //   otherwise         -> exercise malloc_interposer_is_ours directly
 //
 // Exit codes:
@@ -32,6 +35,9 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#if __APPLE__
+#include <sys/mman.h>
+#endif
 
 #include <interposer.h>
 
@@ -39,6 +45,7 @@ int main(int argc, char **argv) {
     size_t pageSize = (size_t)getpagesize();
     int freePath = (argc > 1 && strcmp(argv[1], "free") == 0);
     int taggedPath = (argc > 1 && strcmp(argv[1], "tagged") == 0);
+    int mmapPath = (argc > 1 && strcmp(argv[1], "mmap") == 0);
 
     if (taggedPath) {
 #if __APPLE__
@@ -49,6 +56,29 @@ int main(int argc, char **argv) {
         return replacement_malloc_size(taggedPointer) ? 1 : 0;
 #else
         // Objective-C tagged pointers and replacement_malloc_size are Darwin-only.
+        return 0;
+#endif
+    }
+
+    if (mmapPath) {
+#if __APPLE__
+        // Page-aligned memory that belongs to no malloc zone, with the page
+        // before it unreadable. malloc_size accepts any pointer and must
+        // return 0 here; the classifier must not probe the preceding page.
+        // (Zone-owned page-aligned blocks from valloc / posix_memalign are the
+        // separate case covered by the default mode.)
+        char *base = mmap(NULL, 2 * pageSize, PROT_READ | PROT_WRITE,
+                          MAP_ANON | MAP_PRIVATE, -1, 0);
+        if (base == MAP_FAILED) {
+            return 3;
+        }
+        if (mprotect(base, pageSize, PROT_NONE) != 0) {
+            return 3;
+        }
+        const void *page = base + pageSize;
+        return replacement_malloc_size(page) ? 1 : 0;
+#else
+        // replacement_malloc_size is Darwin-only.
         return 0;
 #endif
     }

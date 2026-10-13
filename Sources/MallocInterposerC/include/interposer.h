@@ -100,16 +100,29 @@ static inline bool malloc_interposer_is_ours(const void *user_ptr) {
 
     // The probe below reads the 8 bytes *before* user_ptr. For our own pointers
     // those bytes are our header, always mapped. For a page-aligned pointer,
-    // though, they fall in the *previous* page — and libc valloc / large
-    // posix_memalign hand back page-aligned pointers backed by a fresh mmap
-    // whose preceding page is unmapped, so the probe would fault.
+    // though, they fall in the *previous* page, which may be unmapped or
+    // protected: libc valloc / large posix_memalign return page-aligned blocks
+    // backed by a fresh mmap with an unmapped guard page before them, and
+    // callers such as CoreSymbolication pass mmap / vm_allocate pages to
+    // malloc_size, whose contract accepts any pointer.
     //
-    // Such allocations are libc allocation *starts*, which malloc_zone_from_ptr
-    // resolves to a zone; our pointers are interior (raw + header) and resolve
-    // to NULL, so they still fall through to the probe (their preceding page
-    // holds our header and is mapped). Gate on 4096 — the smallest page size —
-    // to keep the zone lookup off the hot path for the common case.
-    if (((uintptr_t)user_ptr & 0xFFFU) == 0 && malloc_zone_from_ptr(user_ptr) != NULL) {
+    // Decide page-aligned pointers by where our header *would* be. Our raw
+    // block starts at user_ptr - sizeof(malloc_header_t) and is a libc
+    // allocation start, so malloc_zone_from_ptr resolves it to a zone and the
+    // header bytes are mapped. Any foreign page-aligned pointer resolves to
+    // NULL there (previous page unmapped, or interior to / outside every
+    // block), so it is rejected without a read. Where the lookup succeeds we
+    // still require tag + magic below, so a foreign block that merely sits
+    // after an unrelated 16-byte libc block is not claimed.
+    //
+    // (Looking up user_ptr itself does not work: when our raw block is a
+    // 16-byte block ending on a page boundary, user_ptr is the *next* block's
+    // start and resolves to a zone, misclassifying our own pointer.)
+    //
+    // Gate on 4096 — the smallest page size — to keep the zone lookup off the
+    // hot path for the common case.
+    if (((uintptr_t)user_ptr & 0xFFFU) == 0
+        && malloc_zone_from_ptr((const char *)user_ptr - sizeof(malloc_header_t)) == NULL) {
         return false;
     }
 #endif
