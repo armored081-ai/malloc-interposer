@@ -27,7 +27,8 @@ import MallocInterposerC
 #endif
 
 /// Regression coverage for how the interposer treats pointers it did not hand
-/// out (aligned/legacy allocations that carry no size header).
+/// out (aligned/legacy allocations that carry no size header, and foreign
+/// page-aligned memory outside every malloc zone).
 ///
 /// Serialized because several tests share the interposer's process-global
 /// counters. Skipped under AddressSanitizer/ThreadSanitizer, where the
@@ -64,6 +65,15 @@ struct AlignedPointerSafetyTests {
         @Test
         func isOursDoesNotFaultOnTaggedPointer() throws {
             try assertCrashProbeSucceeds(mode: "tagged")
+        }
+
+        /// A page-aligned pointer owned by no malloc zone (mmap / vm_allocate)
+        /// with an unreadable preceding page. The zone-owned guard added for
+        /// valloc / posix_memalign did not cover it, so `malloc_size` from
+        /// CoreSymbolication faulted on the preceding page (SC-40104).
+        @Test
+        func mallocSizeDoesNotFaultOnPageAlignedNonZonePointer() throws {
+            try assertCrashProbeSucceeds(mode: "mmap")
         }
 
         private func assertCrashProbeSucceeds(mode: String) throws {
