@@ -5,8 +5,7 @@ counts allocations and bytes for the host process and exposes the
 counters through a thin Swift wrapper (and a plain C header for
 non-Swift consumers).
 
-It was extracted from
-[ordo-one/package-benchmark](https://github.com/ordo-one/package-benchmark),
+It was extracted from [ordo-one/package-benchmark](https://github.com/ordo-one/package-benchmark),
 where it backs the framework's `mallocCountSmall`, `mallocCountLarge`,
 `mallocBytesCount`, and related metrics. It is published separately so
 other Swift projects can depend on it directly without pulling in the
