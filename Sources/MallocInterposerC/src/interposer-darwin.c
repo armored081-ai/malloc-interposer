@@ -148,6 +148,13 @@ static void block_destructor(void *arg) {
     // Calls from inside this dylib resolve directly to libsystem, so this
     // is the real libc free — not a recursive call into ourselves.
     free(b);
+
+    // The thread is exiting, and the destructors that run after this one (the
+    // Swift runtime's, libdispatch's, dyld's thread-local storage) still free.
+    // Count nothing more on this thread: without this, t_block still points at
+    // the block just freed, and the next count_free writes into freed memory.
+    t_block = NULL;
+    t_initializing = true;
 }
 
 static void init_block_key(void) {

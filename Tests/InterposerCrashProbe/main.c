@@ -21,6 +21,9 @@
 //   argv[1] == "mmap"   -> exercise replacement_malloc_size with a page-aligned
 //                           pointer owned by no malloc zone whose preceding
 //                           page is PROT_NONE (Darwin only)
+//   argv[1] == "thread-exit" -> free on exiting threads after the interposer's
+//                           own thread-specific destructor has freed the
+//                           thread's counter block
 //   otherwise         -> exercise malloc_interposer_is_ours directly
 //
 // Exit codes:
@@ -40,12 +43,56 @@
 #endif
 
 #include <interposer.h>
+#include <pthread.h>
+
+// A thread-specific key created after the interposer's, so its destructor runs
+// after the interposer's has freed the exiting thread's counter block, as the
+// Swift runtime's and libdispatch's do. Its free must not count into that block.
+static pthread_key_t late_key;
+
+static void late_free(void *ptr) {
+    replacement_free(ptr);
+}
+
+static void *exiting_thread(void *unused) {
+    (void)unused;
+    // The first counted allocation creates this thread's counter block.
+    replacement_free(replacement_malloc(32));
+    pthread_setspecific(late_key, replacement_malloc(48));
+    return NULL;
+}
+
+static int thread_exit_probe(void) {
+    malloc_interposer_enable();
+    // Creates the interposer's key on this thread before ours.
+    replacement_free(replacement_malloc(16));
+    if (pthread_key_create(&late_key, late_free) != 0) {
+        return 3;
+    }
+    for (int i = 0; i < 20000; i++) {
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, exiting_thread, NULL) != 0) {
+            return 3;
+        }
+        pthread_join(thread, NULL);
+        // Reuse what the exiting threads freed, so a write into a freed block
+        // corrupts a live one or a free list.
+        void *again[4];
+        for (int j = 0; j < 4; j++) again[j] = replacement_malloc(96);
+        for (int j = 0; j < 4; j++) replacement_free(again[j]);
+    }
+    return 0;
+}
 
 int main(int argc, char **argv) {
     size_t pageSize = (size_t)getpagesize();
     int freePath = (argc > 1 && strcmp(argv[1], "free") == 0);
     int taggedPath = (argc > 1 && strcmp(argv[1], "tagged") == 0);
     int mmapPath = (argc > 1 && strcmp(argv[1], "mmap") == 0);
+
+    if (argc > 1 && strcmp(argv[1], "thread-exit") == 0) {
+        return thread_exit_probe();
+    }
 
     if (taggedPath) {
 #if __APPLE__
